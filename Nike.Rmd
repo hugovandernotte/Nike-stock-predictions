@@ -1,0 +1,251 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+## Data importation
+
+Let's start by importing our csv file and see which columns we need to keep.
+
+```{r}
+library(dplyr)
+library(forecast)
+data = read.csv("EOD-NKE.csv", header = TRUE)
+head(data)
+```
+
+Our goal is to forecast the monthly values of the Nike Stock Prices for the next quarter. To do so, we decided to only keep the Date and the Open (that we will use as our reference value) columns and transform our data frame to a time series object. We will also format our Date column by removing the day.
+
+```{r}
+data = data[, 1:2]
+data = mutate(data, Date = format(as.Date(Date, format= "%Y-%m-%d"), format = "%Y-%m"))
+data = data[seq(dim(data)[1],1),]
+row.names(data) = NULL
+nike_stocks = ts(data$Open, frequency = 12, start = c(1981, 1), end = c(2019, 2))
+```
+
+## Data visualization
+
+It's now time to plot our data and see if we could recognize some patterns.
+
+```{r}
+plot(nike_stocks)
+```
+
+Starting from 2002 we recognize a recurrent patern in the stock price's evolution. Moreover we do not need that many data for such a long time. We thus decided to only keep data from 2002 on.
+
+```{r}
+nike_stocks = window(nike_stocks, start = c(2002, 1)) 
+plot(nike_stocks)
+```
+
+The time series is not really stationary as we recognize a small upward trend. To eliminate this we should apply the difference operator. As, it is better to go in log-differences (to have returns) we will apply it on our log values.
+
+```{r}
+diff_log_nike_stocks = diff(log(nike_stocks))
+plot(diff_log_nike_stocks)
+```
+
+Now that our time series has no clear trend anymore and is quite stationnary we need to find an adapted model. 
+
+## Modeling
+
+To chose our model we will use correlograms, partial correlograms, residuals and the Ljung-Box test. We will also follow these three steps in order: Specification, Estimation and Validation.
+
+```{r}
+acf(diff_log_nike_stocks, main = NA)
+pacf(diff_log_nike_stocks, main = NA)
+```
+
+Here we recognize a white noise... This leads us to something unpredictable by definition. It is known that returns of financial assets are difficult/impossible to predict. The zero autocorrelations indeed confirm this.
+
+Sometimes a small AR(1) component is found in financial returns series. We could try it and see what we have.
+
+```{r}
+ar1 = arima(diff_log_nike_stocks, order = c(1, 0, 0))
+ar1
+```
+
+Our ar1 coefficient is not statistically different from 0. Our work could thus be stopped there as it seems that we can not forecast the next Nike stock prices. But let's try to use another approach. 
+
+Let's go back to the graph we had before.
+
+```{r}
+nike_stocks = window(nike_stocks, start = c(2002, 1)) 
+plot(nike_stocks)
+```
+
+
+Here, we decided to apply a diff operator based on the small trend that we saw. We could also suggest that there is a small seasonality. Let's see if that could help us.
+
+As we recognize some seasonality, we should apply the difference operator to our time series with a lag of 12 to remove it.
+
+```{r}
+diff_log_nike_stocks = diff(log(nike_stocks), lag = 12)
+plot(diff_log_nike_stocks)
+```
+
+Our time series doesn't perfectly look stationary even if this is a bit better. We know that applying a diff operator leads us to a white noise. Let's assume that our model is stationary enough and see what our correlograms look like. 
+
+Of course this is not completly true, but that may unblock us, so, let's give it a try.
+
+```{r}
+acf(diff_log_nike_stocks, main = NA)
+pacf(diff_log_nike_stocks, main = NA)
+```
+
+Here we notice 8 autocorrelations and 1 partial autocorrealtions significantly different from zero.
+We will try a first model, a MA(8) based on the autocorrelations we saw.
+
+```{r}
+ma8 = arima(diff_log_nike_stocks, order = c(0, 0, 8))
+ma8
+```
+
+The MA(8) estimate are statistically significant. Let's now plot the residual series correlograms to see if we recognize a white noise.
+
+```{r}
+acf(ma8$residuals, main = NA, lag = 48)
+pacf(ma8$residuals, main = NA, lag = 48)
+```
+
+The residual series correlograms seem to validate our MA(8) model as no autocorrelations are significantly different from zero before lag 1. But we should do a box test to completly confirm that the residual series is a white noise. We also notice that the peaks are present on year 1 but also on year 2 and 3 before stopping.
+
+```{r}
+Box.test(diff_log_nike_stocks, type = "Ljung-Box")
+Box.test(ma8$residuals, type = "Ljung-Box")
+```
+
+We strongly reject that our time series is a white noise but we do not reject that the residual series after MA(8) fitting and before one year is a white noise. Indeed, the p-value is greater than 0.05. 
+
+Our MA(8) is thus validated in this way but the residual correlograms show us a correlation after one year, two years and three years. A SARMA model could be a good option to remove this effect.
+
+### SARMA model
+
+As we have a peak at year one, two and three we will start by computing a SARMA(0, 0, 1)(0, 0, 3) on our diff_log variable.
+
+```{r}
+sarma1 = arima(diff_log_nike_stocks, order = c(0, 0, 1), seasonal = c(0, 0, 3))
+sarma1
+```
+
+The estimates are statistically significant. Let's plot the correlogram and partial correlogram of the residual series.
+
+```{r}
+acf(sarma1$residuals, lag = 36, main = NA)
+pacf(sarma1$residuals, lag = 36, main = NA)
+```
+
+The residual series correlograms don't seem to validate our SARIMA model. Let's try to implement another one.
+
+```{r}
+sarma2 = arima(diff_log_nike_stocks, order = c(1, 0, 1), seasonal = c(0, 0, 3))
+acf(sarma2$residuals, lag = 36, main = NA)
+pacf(sarma2$residuals, lag = 36, main = NA)
+```
+
+The residual series correlograms seem to validate our new SARMA model as no autocorrelations are significantly different from zero. But we should do a box test to completly confirm that the residual series is a white noise.
+
+```{r}
+Box.test(sarma2$residuals, type = "Ljung-Box")
+```
+
+As the p value is greater than 0.05 we accept the white noise hypothesis for our residuals and this model is thus validated.
+
+Now, that we designed several models, this is time to compare them.
+
+
+### Models comparaison
+
+In this section we will compare our MA(8) and the SARMA(1, 0, 1)(0, 0, 3) to chose our final model. As we want to predict the next quarter we will useh = 4.
+
+To do so, we will use both: an in and an out-of sample approachs.
+
+#### In sample
+
+Let's start by comparing the AIC and the BIC of our models.
+
+```{r}
+AIC(ma8) 
+AIC(sarma2)
+BIC(ma8) 
+BIC(sarma2)
+```
+
+In both cases our SARMA model got better results, probably due to its smallest complexity.
+
+#### Out-of-sample
+
+For this approach, we opted for the MAE metric as it is less sensible to huge forecast errors that we risk to have. We also set S to 70% of our time series. Finally, we will use a Diebold-Mariano Test to compare our results.
+
+
+```{r}
+y = nike_stocks
+S = round(0.70 * length(y))
+h = 4
+error1.h = c()
+predict1.h = c()
+for (i in S:(length(y) - h)) {
+  mymodel.sub = arima(log(y[1:i]), order = c(0, 0, 8), seasonal = c(0, 1, 0))
+  predict.h = exp(predict(mymodel.sub, n.ahead = h)$pred[h])
+  predict1.h = c(predict1.h, predict.h)
+  error1.h = c(error1.h, y[i + h] - predict.h)
+}
+summary(abs(error1.h))
+```
+
+```{r}
+error2.h = c()
+predict2.h = c()
+for (i in S:(length(y) - h)) {
+  mymodel.sub = arima(log(y[1:i]), order = c(1, 0, 1), seasonal = c(0, 1, 3))
+  predict.h = exp(predict(mymodel.sub, n.ahead = h)$pred[h])
+  predict2.h = c(predict2.h, predict.h)
+  error2.h = c(error2.h, y[i + h] - predict.h)
+}
+summary(abs(error2.h))
+```
+
+
+```{r}
+dm.test(error1.h, error2.h, h = h, power = 1)
+```
+
+We conclude that the forecast performance of the two models, measured by the MAE, is not significantly different. Let's plot our forecast to visualize our model's behaviours.
+
+
+```{r}
+plot(y[(S + h):length(y)], col = "red")
+points(predict1.h, col = "blue")
+points(predict2.h, col = "green")
+```
+
+We notice that forecasts are really close and that our model don't seem to highly differ in their predictions. As the complexity of the SARMA one is the smallest one, we decided to opt for this model. Let's now make our final forecasts.
+
+
+### Forecast
+
+We chose the SARMA(1, 0, 1)(0, 0, 3) model to make our predictions. We set n.ahead to 4 as we want to predict the next quarter. We fit our model on log values without the diff operators to directly make prediction in labels units. 
+
+Even if this effect is not really visible we should note that the arima function won't include any intercept in its estimates (on the contrary to what we did before).
+
+```{r}
+final_model = arima(log(nike_stocks), order = c(1, 0, 1), seasonal = c(0, 1, 3))
+forecast = predict(final_model, n.ahead = 4)
+```
+
+Let's now compute the lower and upper bonds and plot them. As a reminder: we have to use the exponential function to remove the log transformation we did.
+
+```{r}
+expected = exp(forecast$pred)
+alpha = 0.05
+q = qnorm(1 - alpha / 2)
+lower = exp(forecast$pred - q * forecast$se)
+upper = exp(forecast$pred + q * forecast$se)
+
+ts.plot(nike_stocks, expected, xlim = c(2003, 2020), col = 1:4)
+lines(lower, col = "blue")
+lines(upper, col = "blue")
+```
+
+The red line seems to be quite satisfaying and a potential following of our black curve. However, the blue lines which are more extreme show us the complexity to forecast this kind of values. Indeed the gap between our lines is very large letting us not really confident about our predictions.
