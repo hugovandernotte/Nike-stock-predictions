@@ -1,3 +1,4 @@
 # Nike-stock-predictions
 
-A R-based machine learning project on the US presidential election of 2016 🗽
+In this project, our objective was to predict the Nike stock price for the next quarter.
+We used a dataset from Quandl available [here](https://www.quandl.com/data/EOD/NKE-Nike-Inc-NKE-Stock-Prices-Dividends-and-Splits).
